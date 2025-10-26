@@ -28,8 +28,8 @@ android {
     defaultConfig {
         applicationId = "com.example.screen_cast" // Use your actual application ID here if different
 
-        // --- [FIX 3] Set minSdk to 23 ---
-        minSdk = 23
+        // --- [FIX 3] Set minSdk to 29 ---
+        minSdk = 29
 
         targetSdk = flutter.targetSdkVersion // Let Flutter manage targetSdk
         versionCode = flutter.versionCode

@@ -1,10 +1,11 @@
 import 'dart:async';
-import 'dart:io'; // <-- [FIX 1] ADD THIS IMPORT
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart' as shelf_router;
+import 'package:permission_handler/permission_handler.dart'; // <-- 1. ADD THIS IMPORT
 
 class ShareScreen extends StatefulWidget {
   const ShareScreen({super.key});
@@ -16,16 +17,15 @@ class ShareScreen extends StatefulWidget {
 class _ShareScreenState extends State<ShareScreen> {
   final _localRenderer = RTCVideoRenderer();
   MediaStream? _localStream;
-  HttpServer? _server; // <-- [FIX 2] CHANGED THE TYPE from 'shelf.HttpServer'
+  HttpServer? _server;
 
   bool _isSharing = false;
   String _serverUrl = 'Not running';
 
-  // WebRTC objects for peer connection
   RTCPeerConnection? _peerConnection;
   final _rtcConfig = <String, dynamic>{
     'iceServers': [
-      {'urls': 'stun:stun.l.google.com:19302'}, // Google's public STUN server
+      {'urls': 'stun:stun.l.google.com:19302'},
     ],
   };
 
@@ -44,13 +44,44 @@ class _ShareScreenState extends State<ShareScreen> {
     super.dispose();
   }
 
+  // --- 2. ADD THIS NEW PERMISSION FUNCTION ---
+  Future<bool> _requestPermissions() async {
+    // Request camera and microphone permissions
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.camera,
+      Permission.microphone,
+    ].request();
+
+    // Check if both were granted
+    if (statuses[Permission.camera]!.isGranted &&
+        statuses[Permission.microphone]!.isGranted) {
+      return true;
+    }
+
+    // If not, show an error (you can improve this later)
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content:
+              Text('Camera & Microphone permissions are required to share.'),
+        ),
+      );
+    }
+    return false;
+  }
+  // --- END OF NEW FUNCTION ---
+
   Future<void> _toggleSharing() async {
     if (_isSharing) {
-      // Stop sharing
       await _stopSharing();
     } else {
-      // Start sharing
-      await _startSharing();
+      // --- 3. ADD PERMISSION CHECK HERE ---
+      bool permissionsGranted = await _requestPermissions();
+      if (permissionsGranted) {
+        // Only start sharing if permissions are granted
+        await _startSharing();
+      }
+      // --- END OF PERMISSION CHECK ---
     }
   }
 
@@ -59,13 +90,11 @@ class _ShareScreenState extends State<ShareScreen> {
       // 1. Get screen sharing stream
       _localStream = await navigator.mediaDevices.getDisplayMedia({
         'video': true,
-        'audio': false, // Audio sharing is more complex, let's start with video
+        'audio':
+            false, // We still ask for audio permission, but don't capture it
       });
 
-      // Update the local video renderer to show a preview
       _localRenderer.srcObject = _localStream;
-
-      // 2. Start the web server
       await _startServer();
 
       setState(() {
@@ -81,21 +110,15 @@ class _ShareScreenState extends State<ShareScreen> {
 
   Future<void> _stopSharing() async {
     try {
-      // Stop all video tracks
       _localStream?.getTracks().forEach((track) {
         track.stop();
       });
       _localStream = null;
 
-      // Close the server
       await _server?.close(force: true);
       _server = null;
-
-      // Close any active peer connection
       await _peerConnection?.close();
       _peerConnection = null;
-
-      // Clear the video preview
       _localRenderer.srcObject = null;
 
       setState(() {
@@ -107,57 +130,37 @@ class _ShareScreenState extends State<ShareScreen> {
     }
   }
 
-  // --- Web Server Logic ---
-
   Future<void> _startServer() async {
     final router = shelf_router.Router();
-
-    // This endpoint is called by the browser to start the WebRTC connection
     router.post('/offer', _handleOffer);
-
-    // This endpoint serves the simple HTML viewer page
     router.get('/', (shelf.Request request) {
       return shelf.Response.ok(
-        _htmlViewerPage, // HTML code is defined at the bottom
+        _htmlViewerPage,
         headers: {'Content-Type': 'text/html'},
       );
     });
 
-    // Start the server on port 8080 (you can change this)
-    // We bind to '0.0.0.0' to make it accessible on the local network
     final server = await shelf_io.serve(router, '0.0.0.0', 8080);
     _server = server;
-
-    // NOTE: FlutLab's environment might be tricky for getting the *local* IP.
-    // In a real device, you would get the IP.
-    // For now, we'll just state the port.
     setState(() {
       _serverUrl = 'Running at http://[YOUR_PHONE_IP]:8080';
     });
   }
 
-  // --- WebRTC Server Handlers ---
-
   Future<shelf.Response> _handleOffer(shelf.Request request) async {
     final body = await request.readAsString();
     final offer = RTCSessionDescription(body, 'offer');
 
-    // 1. Create a new peer connection
     _peerConnection = await createPeerConnection(_rtcConfig);
 
-    // 2. Add the screen stream tracks to the connection
     _localStream?.getTracks().forEach((track) {
       _peerConnection?.addTrack(track, _localStream!);
     });
 
-    // 3. Set the "offer" from the browser as the remote description
     await _peerConnection!.setRemoteDescription(offer);
-
-    // 4. Create an "answer" to send back
     final answer = await _peerConnection!.createAnswer();
     await _peerConnection!.setLocalDescription(answer);
 
-    // 5. Send the answer back to the browser
     return shelf.Response.ok(
       answer.sdp,
       headers: {'Content-Type': 'application/sdp'},
@@ -175,7 +178,6 @@ class _ShareScreenState extends State<ShareScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Video preview window
             Container(
               height: 200,
               decoration: BoxDecoration(
@@ -189,8 +191,6 @@ class _ShareScreenState extends State<ShareScreen> {
                     ),
             ),
             const SizedBox(height: 20),
-
-            // Start/Stop Button
             ElevatedButton(
               onPressed: _toggleSharing,
               style: ElevatedButton.styleFrom(
@@ -203,8 +203,6 @@ class _ShareScreenState extends State<ShareScreen> {
               ),
             ),
             const SizedBox(height: 30),
-
-            // Server status info
             const Text(
               'Share URL:',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -217,7 +215,6 @@ class _ShareScreenState extends State<ShareScreen> {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: SelectableText(
-                // Changed to SelectableText
                 _serverUrl,
                 style: const TextStyle(fontSize: 16, letterSpacing: 1.1),
               ),
@@ -233,7 +230,7 @@ class _ShareScreenState extends State<ShareScreen> {
     );
   }
 
-  // This is the HTML page that will be served to the PC's browser
+  // ... (HTML viewer page code remains the same) ...
   final String _htmlViewerPage = '''
   <html>
     <head>
